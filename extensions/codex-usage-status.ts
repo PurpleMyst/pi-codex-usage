@@ -49,6 +49,9 @@ const SETTINGS_FILE = path.join(AGENT_DIR, "settings.json");
 
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const REFRESH_INTERVAL_MS = 60_000;
+const SECONDS_PER_DAY = 86_400;
+const SEVEN_DAY_WINDOW_SECONDS = 7 * SECONDS_PER_DAY;
+const USAGE_TARGET_DAILY_PERCENT = 100 / 7;
 
 const CODEX_LABEL = "Codex";
 const CODEX_SPARK_LABEL = "Codex Spark";
@@ -56,6 +59,10 @@ const SPARK_MODEL_ID = "gpt-5.3-codex-spark";
 const SPARK_LIMIT_NAME = "GPT-5.3-Codex-Spark";
 const FIVE_HOUR_LABEL = "5h:";
 const SEVEN_DAY_LABEL = "7d:";
+const LEFT_MODE_ICON = "";
+const USED_MODE_ICON = "";
+const USAGE_TARGET_ICON = "󰓾";
+const RESET_ICON = "↺";
 const UNKNOWN_PERCENT = "--";
 
 const MISSING_AUTH_ERROR_PREFIX = "Missing openai-codex OAuth access/accountId";
@@ -74,6 +81,34 @@ function leftToUsedPercent(value: number | null | undefined): number | null {
 	return clampPercent(100 - value);
 }
 
+function clampDayIndex(value: number): number {
+	return Math.min(7, Math.max(1, value));
+}
+
+function roundHalfToEven(value: number, decimals = 0): number {
+	const factor = 10 ** decimals;
+	const scaled = value * factor;
+	const sign = Math.sign(scaled) || 1;
+	const absScaled = Math.abs(scaled);
+	const floor = Math.floor(absScaled);
+	const fraction = absScaled - floor;
+	const epsilon = 1e-10;
+
+	let rounded: number;
+	if (Math.abs(fraction - 0.5) <= epsilon) {
+		rounded = floor % 2 === 0 ? floor : floor + 1;
+	} else {
+		rounded = Math.round(absScaled);
+	}
+
+	return (sign * rounded) / factor;
+}
+
+function formatPercentagePointDelta(value: number): string {
+	const decimals = Math.abs(value) < 1 ? 1 : 0;
+	return roundHalfToEven(value, decimals).toFixed(decimals);
+}
+
 function colorizePercent(
 	theme: ExtensionContext["ui"]["theme"],
 	valueLeft: number | null,
@@ -84,8 +119,7 @@ function colorizePercent(
 		return theme.fg("muted", UNKNOWN_PERCENT);
 	}
 
-	const percentText = `${Math.round(clampPercent(displayValue))}%`;
-	const text = mode === "left" ? `${percentText} left` : `${percentText} used`;
+	const text = `${Math.round(clampPercent(displayValue))}%`;
 	if (mode === "left") {
 		if (displayValue <= 10) return theme.fg("error", text);
 		if (displayValue <= 25) return theme.fg("warning", text);
@@ -94,6 +128,28 @@ function colorizePercent(
 
 	if (displayValue >= 90) return theme.fg("error", text);
 	if (displayValue >= 75) return theme.fg("warning", text);
+	return theme.fg("success", text);
+}
+
+function colorizeUsageTarget(
+	theme: ExtensionContext["ui"]["theme"],
+	sevenDayLeftPercent: number | null,
+	sevenDayResetInSeconds: number | null,
+): string {
+	if (typeof sevenDayLeftPercent !== "number" || Number.isNaN(sevenDayLeftPercent)) return "";
+	if (typeof sevenDayResetInSeconds !== "number" || Number.isNaN(sevenDayResetInSeconds)) return "";
+
+	const sevenDayUsedPercent = leftToUsedPercent(sevenDayLeftPercent);
+	if (sevenDayUsedPercent === null) return "";
+
+	const completedDays = Math.floor((SEVEN_DAY_WINDOW_SECONDS - sevenDayResetInSeconds) / SECONDS_PER_DAY);
+	const dayIndex = clampDayIndex(completedDays + 1);
+	const targetUsedPercent = dayIndex * USAGE_TARGET_DAILY_PERCENT;
+	const targetDelta = targetUsedPercent - sevenDayUsedPercent;
+	const text = `${USAGE_TARGET_ICON}${formatPercentagePointDelta(targetDelta)}%`;
+
+	if (targetDelta < 0) return theme.fg("error", text);
+	if (targetDelta === 0) return theme.fg("warning", text);
 	return theme.fg("success", text);
 }
 
@@ -127,16 +183,19 @@ function formatStatus(
 	modelId: string | undefined,
 ): string {
 	const theme = ctx.ui.theme;
-	const label = getStatusLabel(modelId);
+	const label = mode === "left" ? LEFT_MODE_ICON : USED_MODE_ICON;
 	const title = usage.isLimited ? theme.fg("error", label) : theme.fg("dim", label);
 	const fiveHourText = colorizePercent(theme, usage.fiveHourLeftPercent, mode);
 	const sevenDayText = colorizePercent(theme, usage.sevenDayLeftPercent, mode);
+	const targetText = colorizeUsageTarget(theme, usage.sevenDayLeftPercent, usage.sevenDayResetInSeconds);
+	const targetStatus = targetText ? ` ${targetText}` : "";
 	const resetSeconds = resetWindowMode === "5h" ? usage.fiveHourResetInSeconds : usage.sevenDayResetInSeconds;
 	const resetText = formatResetCountdown(resetSeconds);
-	const resetLabel = resetWindowMode === "5h" ? FIVE_HOUR_LABEL : SEVEN_DAY_LABEL;
-	const resetStatus = resetText ? theme.fg("dim", ` (${resetLabel}↺${resetText})`) : "";
+	const resetStatus = resetText ? theme.fg("dim", `${RESET_ICON}${resetText}`) : "";
+	const fiveHourResetStatus = resetWindowMode === "5h" && resetStatus ? ` ${resetStatus}` : "";
+	const sevenDayResetStatus = resetWindowMode === "7d" && resetStatus ? ` ${resetStatus}` : "";
 
-	return `${title} ${theme.fg("dim", FIVE_HOUR_LABEL)}${fiveHourText} ${theme.fg("dim", SEVEN_DAY_LABEL)}${sevenDayText}${resetStatus}`;
+	return `${title} ${theme.fg("dim", FIVE_HOUR_LABEL)}${fiveHourText}${fiveHourResetStatus} ${theme.fg("dim", SEVEN_DAY_LABEL)}${sevenDayText}${sevenDayResetStatus}${targetStatus}`;
 }
 
 function parseModeCommandArgument(args: string, currentMode: PercentDisplayMode): PercentDisplayMode | null {
@@ -152,17 +211,17 @@ function getModeArgumentCompletions(argumentPrefix: string) {
 		{
 			value: "left",
 			label: "left",
-			description: 'Shows: "Codex 5h:81% left 7d:64% left" (Spark model: "Codex Spark 5h:81% left 7d:64% left")',
+			description: 'Shows: " 5h:81% 7d:64%"',
 		},
 		{
 			value: "used",
 			label: "used",
-			description: 'Shows: "Codex 5h:19% used 7d:36% used" (Spark model: "Codex Spark 5h:19% used 7d:36% used")',
+			description: 'Shows: " 5h:19% 7d:36%"',
 		},
 		{
 			value: "toggle",
 			label: "toggle",
-			description: 'Flips between "... left" and "... used"',
+			description: 'Flips title icon between "" left and "" used display',
 		},
 	];
 
@@ -184,12 +243,12 @@ function getResetWindowArgumentCompletions(argumentPrefix: string) {
 		{
 			value: "5h",
 			label: "5h",
-			description: 'Shows reset countdown as "(5h:↺...)"',
+			description: 'Shows reset countdown after 5h as "5h:... ↺..."',
 		},
 		{
 			value: "7d",
 			label: "7d",
-			description: 'Shows reset countdown as "(7d:↺...)"',
+			description: 'Shows reset countdown after 7d as "7d:... ↺..."',
 		},
 		{
 			value: "toggle",
@@ -565,11 +624,6 @@ export default function (pi: ExtensionAPI) {
 	pi.on("turn_end", (_event, ctx) => {
 		void refresher.refreshFor(ctx);
 	});
-
-	pi.on("session_switch", (_event, ctx) => {
-		void refresher.refreshFor(ctx);
-	});
-
 	pi.on("model_select", (event, ctx) => {
 		void refresher.refreshFor(ctx, event.model.id);
 	});

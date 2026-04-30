@@ -15,5 +15,16 @@
   "homepage": "https://github.com/calesennett/pi-codex-usage#readme",
   "bugs": {
     "url": "https://github.com/calesennett/pi-codex-usage/issues"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.70.6"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.70.6",
+    "@types/node": "^25.6.0",
+    "typescript": "^6.0.3"
   }
 }
