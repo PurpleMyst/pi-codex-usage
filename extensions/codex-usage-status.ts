@@ -146,7 +146,7 @@ function colorizeUsageTarget(
 	const dayIndex = clampDayIndex(completedDays + 1);
 	const targetUsedPercent = dayIndex * USAGE_TARGET_DAILY_PERCENT;
 	const targetDelta = targetUsedPercent - sevenDayUsedPercent;
-	const text = `${USAGE_TARGET_ICON}${formatPercentagePointDelta(targetDelta)}%`;
+	const text = `${USAGE_TARGET_ICON} ${formatPercentagePointDelta(targetDelta)}%`;
 
 	if (targetDelta < 0) return theme.fg("error", text);
 	if (targetDelta === 0) return theme.fg("warning", text);
