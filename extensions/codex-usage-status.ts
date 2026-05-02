@@ -85,28 +85,12 @@ function clampDayIndex(value: number): number {
 	return Math.min(7, Math.max(1, value));
 }
 
-function roundHalfToEven(value: number, decimals = 0): number {
-	const factor = 10 ** decimals;
-	const scaled = value * factor;
-	const sign = Math.sign(scaled) || 1;
-	const absScaled = Math.abs(scaled);
-	const floor = Math.floor(absScaled);
-	const fraction = absScaled - floor;
-	const epsilon = 1e-10;
-
-	let rounded: number;
-	if (Math.abs(fraction - 0.5) <= epsilon) {
-		rounded = floor % 2 === 0 ? floor : floor + 1;
-	} else {
-		rounded = Math.round(absScaled);
-	}
-
-	return (sign * rounded) / factor;
+function formatPercentage(value: number): string {
+	return clampPercent(value).toFixed(2);
 }
 
 function formatPercentagePointDelta(value: number): string {
-	const decimals = Math.abs(value) < 1 ? 1 : 0;
-	return roundHalfToEven(value, decimals).toFixed(decimals);
+	return value.toFixed(2);
 }
 
 function colorizePercent(
@@ -119,7 +103,7 @@ function colorizePercent(
 		return theme.fg("muted", UNKNOWN_PERCENT);
 	}
 
-	const text = `${Math.round(clampPercent(displayValue))}%`;
+	const text = `${formatPercentage(displayValue)}%`;
 	if (mode === "left") {
 		if (displayValue <= 10) return theme.fg("error", text);
 		if (displayValue <= 25) return theme.fg("warning", text);
