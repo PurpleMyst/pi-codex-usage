@@ -86,11 +86,11 @@ function clampDayIndex(value: number): number {
 }
 
 function formatPercentage(value: number): string {
-	return clampPercent(value).toFixed(2);
+	return Math.round(clampPercent(value)).toString();
 }
 
 function formatPercentagePointDelta(value: number): string {
-	return value.toFixed(2);
+	return Math.round(value).toString();
 }
 
 function colorizePercent(
