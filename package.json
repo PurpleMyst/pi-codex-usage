@@ -2,6 +2,7 @@
   "name": "@calesennett/pi-codex-usage",
   "version": "0.1.11",
   "description": "Codex usage footer extension for pi",
+  "type": "module",
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -16,15 +17,24 @@
   "bugs": {
     "url": "https://github.com/calesennett/pi-codex-usage/issues"
   },
+  "pi": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
   "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --minify --legal-comments=eof --outfile=dist/index.js --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-ai --external:@earendil-works/pi-agent-core --external:@earendil-works/pi-tui --external:typebox",
+    "build:debug": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --sourcemap --outfile=dist/index.js --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-ai --external:@earendil-works/pi-agent-core --external:@earendil-works/pi-tui --external:typebox",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "^0.70.6"
+    "@earendil-works/pi-coding-agent": "^0.79.1"
   },
   "devDependencies": {
-    "@mariozechner/pi-coding-agent": "^0.70.6",
+    "@earendil-works/pi-coding-agent": "^0.79.1",
     "@types/node": "^25.6.0",
+    "esbuild": "^0.27.0",
+    "lefthook": "^2.1.9",
     "typescript": "^6.0.3"
   }
 }
