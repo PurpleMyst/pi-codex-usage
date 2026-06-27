@@ -12,15 +12,15 @@ pi install npm:@calesennett/pi-codex-usage
 
 ## Commands
 
-| Command | Effect |
-| --- | --- |
-| `/codex-usage-mode` | Toggle display mode (`left` ↔ `used`). |
-| `/codex-usage-mode left` | Show percent left in each window. |
-| `/codex-usage-mode used` | Show percent used in each window. |
-| `/codex-usage-reset-window` | Toggle reset countdown window (`7d` ↔ `5h`). |
-| `/codex-usage-reset-window 7d` | Show reset countdown for the 7d window. |
-| `/codex-usage-reset-window 5h` | Show reset countdown for the 5h window. |
-| `/codex-resets` | Show available Codex reset credits and their local expiration times. |
+| Command                        | Effect                                                               |
+| ------------------------------ | -------------------------------------------------------------------- |
+| `/codex-usage-mode`            | Toggle display mode (`left` ↔ `used`).                               |
+| `/codex-usage-mode left`       | Show percent left in each window.                                    |
+| `/codex-usage-mode used`       | Show percent used in each window.                                    |
+| `/codex-usage-reset-window`    | Toggle reset countdown window (`7d` ↔ `5h`).                         |
+| `/codex-usage-reset-window 7d` | Show reset countdown for the 7d window.                              |
+| `/codex-usage-reset-window 5h` | Show reset countdown for the 5h window.                              |
+| `/codex-resets`                | Show available Codex reset credits and their local expiration times. |
 
 ## Settings
 
