@@ -21,6 +21,16 @@ type CodexUsageResponse = {
 	additional_rate_limits?: Record<string, unknown> | unknown[] | null;
 };
 
+type CodexResetCreditsResponse = {
+	credits?: unknown[] | null;
+} | null;
+
+type ResetCreditRow = {
+	index: number;
+	status: string;
+	expiresAtLocal: string;
+};
+
 type UsageSnapshot = {
 	fiveHourLeftPercent: number | null;
 	sevenDayLeftPercent: number | null;
@@ -48,6 +58,7 @@ const AUTH_FILE = path.join(AGENT_DIR, "auth.json");
 const SETTINGS_FILE = path.join(AGENT_DIR, "settings.json");
 
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+const RESETS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 const REFRESH_INTERVAL_MS = 60_000;
 const SECONDS_PER_DAY = 86_400;
 const SEVEN_DAY_WINDOW_SECONDS = 7 * SECONDS_PER_DAY;
@@ -284,6 +295,80 @@ async function requestUsageJson(): Promise<CodexUsageResponse> {
 
 	if (!response.ok) throw new Error(`Codex usage request failed (${response.status}) for ${USAGE_URL}`);
 	return (await response.json()) as CodexUsageResponse;
+}
+
+async function requestResetCreditsJson(): Promise<CodexResetCreditsResponse> {
+	const credentials = await loadAuthCredentials();
+	const response = await fetch(RESETS_URL, {
+		headers: {
+			accept: "application/json",
+			authorization: `Bearer ${credentials.accessToken}`,
+			"chatgpt-account-id": credentials.accountId,
+			originator: "Codex Desktop",
+			"user-agent": "pi-codex-usage",
+		},
+	});
+
+	if (!response.ok) throw new Error(`Codex resets request failed (${response.status}) for ${RESETS_URL}`);
+	return (await response.json()) as CodexResetCreditsResponse;
+}
+
+function pad2(value: number): string {
+	return String(value).padStart(2, "0");
+}
+
+function formatLocalTimestamp(value: string): string {
+	const date = new Date(value);
+	if (Number.isNaN(date.getTime())) return value;
+
+	let zoneName = "";
+	try {
+		const parts = new Intl.DateTimeFormat(undefined, { timeZoneName: "short" }).formatToParts(date);
+		zoneName = parts.find((part) => part.type === "timeZoneName")?.value ?? "";
+	} catch {
+		zoneName = "";
+	}
+
+	const dateText = [date.getFullYear(), pad2(date.getMonth() + 1), pad2(date.getDate())].join("-");
+	const timeText = [pad2(date.getHours()), pad2(date.getMinutes()), pad2(date.getSeconds())].join(":");
+	return zoneName ? `${dateText} ${timeText} ${zoneName}` : `${dateText} ${timeText}`;
+}
+
+function normalizeResetCreditRows(payload: CodexResetCreditsResponse): ResetCreditRow[] {
+	const creditPayload = payload?.credits;
+	if (!Array.isArray(creditPayload)) {
+		throw new Error("Codex resets response did not contain a credits array");
+	}
+
+	const credits = creditPayload
+		.map(asObject)
+		.filter((credit): credit is Record<string, unknown> => credit !== null)
+		.filter((credit) => credit.expires_at != null && String(credit.expires_at).length > 0);
+	const hasAnyStatus = credits.some((credit) => credit.status != null);
+	const availableCredits = hasAnyStatus ? credits.filter((credit) => credit.status === "available") : credits;
+
+	return availableCredits.map((credit, index) => ({
+		index: index + 1,
+		status: credit.status == null ? "" : String(credit.status),
+		expiresAtLocal: formatLocalTimestamp(String(credit.expires_at)),
+	}));
+}
+
+function formatResetCreditsTable(rows: ResetCreditRow[]): string {
+	if (rows.length === 0) {
+		return "Codex resets\nNo available reset credits found.";
+	}
+
+	const headers = ["#", "Status", "Expires locally"];
+	const tableRows = rows.map((row) => [String(row.index), row.status || "-", row.expiresAtLocal]);
+	const widths = headers.map((header, columnIndex) =>
+		Math.max(header.length, ...tableRows.map((row) => row[columnIndex]?.length ?? 0)),
+	);
+	const table = [headers, ...tableRows]
+		.map((row) => row.map((cell, columnIndex) => cell.padEnd(widths[columnIndex] ?? 0)).join("  "))
+		.join("\n");
+
+	return `Codex resets (${rows.length} available)\n${table}`;
 }
 
 function asObject(value: unknown): Record<string, unknown> | null {
@@ -644,6 +729,20 @@ export default function (pi: ExtensionAPI) {
 			queuePersistCurrentPreferences(ctx);
 			if (!refresher.renderFromLastSnapshot(ctx)) {
 				await refresher.refreshFor(ctx);
+			}
+		},
+	});
+
+	pi.registerCommand("codex-resets", {
+		description: "Show available Codex reset credits",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) return;
+
+			try {
+				const rows = normalizeResetCreditRows(await requestResetCreditsJson());
+				ctx.ui.notify(formatResetCreditsTable(rows), "info");
+			} catch (error) {
+				ctx.ui.notify(`pi-codex-usage: failed to load Codex resets: ${formatErrorMessage(error)}`, "warning");
 			}
 		},
 	});
