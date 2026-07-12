@@ -4,6 +4,7 @@ import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 type UsageWindow = {
+	limit_window_seconds?: number | null;
 	used_percent?: number | null;
 	reset_after_seconds?: number | null;
 	reset_at?: number | null;
@@ -62,6 +63,7 @@ const RESETS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credit
 const REFRESH_INTERVAL_MS = 60_000;
 const SECONDS_PER_DAY = 86_400;
 const SEVEN_DAY_WINDOW_SECONDS = 7 * SECONDS_PER_DAY;
+const FIVE_HOUR_WINDOW_SECONDS = 5 * 60 * 60;
 const USAGE_TARGET_DAILY_PERCENT = 100 / 7;
 
 const CODEX_LABEL = "Codex";
@@ -480,11 +482,19 @@ function getResetSeconds(window: UsageWindow | null | undefined): number | null 
 	return Math.max(0, resetAtSeconds - Date.now() / 1000);
 }
 
+function findRateLimitWindow(bucket: RateLimitBucket | null, durationSeconds: number): UsageWindow | null {
+	if (!bucket) return null;
+
+	return [bucket.primary_window, bucket.secondary_window].find(
+		(window) => window?.limit_window_seconds === durationSeconds,
+	) ?? null;
+}
+
 function parseUsageSnapshot(data: CodexUsageResponse, modelId: string | undefined): UsageSnapshot {
 	const selectedBucket = selectRateLimitBucket(data, modelId);
-	const fiveHourWindow = selectedBucket?.primary_window;
+	const fiveHourWindow = findRateLimitWindow(selectedBucket, FIVE_HOUR_WINDOW_SECONDS);
 	const fiveHourValue = fiveHourWindow?.used_percent;
-	const sevenDayWindow = selectedBucket?.secondary_window;
+	const sevenDayWindow = findRateLimitWindow(selectedBucket, SEVEN_DAY_WINDOW_SECONDS);
 	const sevenDayValue = sevenDayWindow?.used_percent;
 
 	return {
