@@ -174,6 +174,10 @@ function isSparkModel(modelId: string | undefined): boolean {
 	return modelId === SPARK_MODEL_ID;
 }
 
+function isCodexModel(model: ExtensionContext["model"]): boolean {
+	return model?.provider === "openai-codex";
+}
+
 function getStatusLabel(modelId: string | undefined): string {
 	return isSparkModel(modelId) ? CODEX_SPARK_LABEL : CODEX_LABEL;
 }
@@ -524,7 +528,8 @@ function createStatusRefresher() {
 	let refreshTimer: ReturnType<typeof setInterval> | undefined;
 	let activeContext: ExtensionContext | undefined;
 	let isRefreshInFlight = false;
-	let queuedRefresh: { modelId: string | undefined } | null = null;
+	let queuedRefresh: { model: ExtensionContext["model"] } | null = null;
+	let currentModel: ExtensionContext["model"];
 	let percentDisplayMode: PercentDisplayMode = DEFAULT_PERCENT_DISPLAY_MODE;
 	let resetWindowMode: ResetWindowMode = DEFAULT_RESET_WINDOW_MODE;
 	let statusState: FooterStatusState | undefined;
@@ -562,32 +567,41 @@ function createStatusRefresher() {
 
 	}
 
-	async function refreshUsage(modelId: string | undefined): Promise<void> {
+	async function refreshUsage(model: ExtensionContext["model"]): Promise<void> {
+		currentModel = model;
+		if (!isCodexModel(model)) {
+			queuedRefresh = null;
+			statusState = { kind: "hidden" };
+			render();
+			return;
+		}
 		if (isRefreshInFlight) {
-			queuedRefresh = { modelId };
+			queuedRefresh = { model };
 			return;
 		}
 		isRefreshInFlight = true;
 		try {
-			const usage = parseUsageSnapshot(await requestUsageJson(), modelId);
-			statusState = { kind: "ready", usage, modelId };
+			const usage = parseUsageSnapshot(await requestUsageJson(), model?.id);
+			statusState = { kind: "ready", usage, modelId: model?.id };
 		} catch (error) {
-			statusState = isMissingCodexAuthError(error) ? { kind: "hidden" } : { kind: "unavailable", modelId };
+			statusState = isMissingCodexAuthError(error) ? { kind: "hidden" } : { kind: "unavailable", modelId: model?.id };
 		} finally {
 			isRefreshInFlight = false;
 		}
+		// A switch to a non-Codex model during the fetch must not be overwritten.
+		if (!isCodexModel(currentModel)) statusState = { kind: "hidden" };
 		render();
 		if (queuedRefresh) {
 			const nextRefresh = queuedRefresh;
 			queuedRefresh = null;
-			await refreshUsage(nextRefresh.modelId);
+			await refreshUsage(nextRefresh.model);
 		}
 
 	}
 
-	function refreshFor(ctx: ExtensionContext, modelId = ctx.model?.id): Promise<void> {
+	function refreshFor(ctx: ExtensionContext, model: ExtensionContext["model"] = ctx.model): Promise<void> {
 		activeContext = ctx;
-		return refreshUsage(modelId);
+		return refreshUsage(model);
 	}
 
 	function startAutoRefresh(): void {
@@ -595,7 +609,7 @@ function createStatusRefresher() {
 		refreshTimer = setInterval(() => {
 			const ctx = activeContext;
 			if (!ctx) return;
-			void refreshUsage(ctx.model?.id);
+			void refreshUsage(ctx.model);
 		}, REFRESH_INTERVAL_MS);
 		refreshTimer.unref?.();
 	}
@@ -613,7 +627,9 @@ function createStatusRefresher() {
 
 	function setLoading(ctx: ExtensionContext): void {
 		activeContext = ctx;
-		statusState = { kind: "loading", modelId: ctx.model?.id };
+		statusState = isCodexModel(ctx.model)
+			? { kind: "loading", modelId: ctx.model?.id }
+			: { kind: "hidden" };
 		render();
 	}
 
@@ -736,7 +752,7 @@ export default function (pi: ExtensionAPI) {
 		void refresher.refreshFor(ctx);
 	});
 	pi.on("model_select", (event, ctx) => {
-		void refresher.refreshFor(ctx, event.model.id);
+		void refresher.refreshFor(ctx, event.model);
 	});
 
 	pi.on("session_shutdown", () => {

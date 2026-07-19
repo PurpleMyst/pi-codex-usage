@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, test } from "node:test";
+import { afterEach, beforeEach, mock, test } from "node:test";
 
 // These tests run against the built bundle (dist/index.js). Run `pnpm build` first;
 // `pnpm test` does this for you.
@@ -52,7 +52,7 @@ async function waitFor(condition, timeoutMs = 2_000) {
 	}
 }
 
-function makeRuntime(modelId = "gpt-5.1-codex") {
+function makeRuntime(modelId = "gpt-5.1-codex", provider = "openai-codex") {
 	const runtime = { stale: false, statuses: [], notifications: [] };
 	const ui = {
 		theme: { fg: (_color, text) => text },
@@ -74,7 +74,7 @@ function makeRuntime(modelId = "gpt-5.1-codex") {
 			},
 			get model() {
 				assertActive();
-				return { id: modelId };
+				return { id: modelId, provider };
 			},
 		};
 	}
@@ -99,7 +99,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-	await fs.rm(agentDir, { recursive: true, force: true });
+	await fs.rm(agentDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 });
 
 // Fresh module per call: pi rebinds a new extension instance for each session.
@@ -213,4 +213,91 @@ test("codex-resets finishing after reload does not touch the stale context", asy
 
 	assert.deepEqual(rejections, []);
 	assert.equal(session.runtime.notifications.length, notificationsBeforeStale);
+});
+
+test("session start on a non-Codex model hides the footer without fetching", async (t) => {
+	const rejections = watchRejections(t);
+	const extension = await loadExtension();
+	const session = makeRuntime("claude-sonnet-4-5", "anthropic");
+
+	extension.handlers.get("session_start")({ type: "session_start", reason: "startup" }, session.createContext());
+	await waitFor(() => session.runtime.statuses.length > 0);
+	await flush();
+
+	assert.equal(fetchQueue.length, 0, "no usage fetch for a non-Codex model");
+	const rendered = session.runtime.statuses.at(-1);
+	assert.equal(rendered.id, EXTENSION_ID);
+	assert.equal(rendered.text, undefined, "footer is cleared");
+	assert.deepEqual(rejections, []);
+});
+
+test("model_select to a non-Codex model hides the footer; switching back resumes", async (t) => {
+	const rejections = watchRejections(t);
+	const extension = await loadExtension();
+	const session = makeRuntime();
+
+	extension.handlers.get("session_start")({ type: "session_start", reason: "startup" }, session.createContext());
+	await waitFor(() => fetchQueue.length === 1);
+	fetchQueue[0].resolve(jsonResponse(USAGE_PAYLOAD));
+	await flush();
+	assert.match(session.runtime.statuses.at(-1).text, /5h:80%/);
+
+	extension.handlers.get("model_select")(
+		{ type: "model_select", model: { id: "claude-sonnet-4-5", provider: "anthropic" }, previousModel: undefined, source: "set" },
+		session.createContext(),
+	);
+	await flush();
+	assert.equal(fetchQueue.length, 1, "no fetch when hiding");
+	assert.equal(session.runtime.statuses.at(-1).text, undefined, "footer is cleared");
+
+	extension.handlers.get("model_select")(
+		{ type: "model_select", model: { id: "gpt-5.1-codex", provider: "openai-codex" }, previousModel: undefined, source: "set" },
+		session.createContext(),
+	);
+	await waitFor(() => fetchQueue.length === 2);
+	fetchQueue[1].resolve(jsonResponse(USAGE_PAYLOAD));
+	await flush();
+	assert.match(session.runtime.statuses.at(-1).text, /5h:80%/);
+	assert.deepEqual(rejections, []);
+});
+
+test("switching to a non-Codex model during an in-flight refresh keeps the footer hidden", async (t) => {
+	const rejections = watchRejections(t);
+	const extension = await loadExtension();
+	const session = makeRuntime();
+
+	extension.handlers.get("session_start")({ type: "session_start", reason: "startup" }, session.createContext());
+	await waitFor(() => fetchQueue.length === 1);
+
+	extension.handlers.get("model_select")(
+		{ type: "model_select", model: { id: "claude-sonnet-4-5", provider: "anthropic" }, previousModel: undefined, source: "set" },
+		session.createContext(),
+	);
+	await flush();
+
+	fetchQueue[0].resolve(jsonResponse(USAGE_PAYLOAD));
+	await flush();
+
+	assert.equal(fetchQueue.length, 1, "no follow-up fetch");
+	assert.equal(session.runtime.statuses.at(-1).text, undefined, "footer stays hidden");
+	assert.deepEqual(rejections, []);
+});
+
+test("auto-refresh ticks stay hidden without fetching on a non-Codex model", async (t) => {
+	const rejections = watchRejections(t);
+	mock.timers.enable({ apis: ["setInterval"] });
+	t.after(() => mock.timers.reset());
+	const extension = await loadExtension();
+	const session = makeRuntime("claude-sonnet-4-5", "anthropic");
+
+	extension.handlers.get("session_start")({ type: "session_start", reason: "startup" }, session.createContext());
+	await waitFor(() => session.runtime.statuses.length > 0);
+	await flush();
+	assert.equal(fetchQueue.length, 0);
+
+	mock.timers.tick(120_000);
+	await flush();
+
+	assert.equal(fetchQueue.length, 0, "interval ticks must not fetch for a non-Codex model");
+	assert.deepEqual(rejections, []);
 });
