@@ -25,7 +25,8 @@
   "scripts": {
     "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --minify --legal-comments=eof --outfile=dist/index.js --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-ai --external:@earendil-works/pi-agent-core --external:@earendil-works/pi-tui --external:typebox",
     "build:debug": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --sourcemap --outfile=dist/index.js --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-ai --external:@earendil-works/pi-agent-core --external:@earendil-works/pi-tui --external:typebox",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "pnpm run build && node --test test/stale-ctx.test.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "^0.79.1"

@@ -40,6 +40,12 @@ type UsageSnapshot = {
 	isLimited: boolean;
 };
 
+type FooterStatusState =
+	| { kind: "loading"; modelId: string | undefined }
+	| { kind: "ready"; usage: UsageSnapshot; modelId: string | undefined }
+	| { kind: "hidden" }
+	| { kind: "unavailable"; modelId: string | undefined };
+
 type PercentDisplayMode = "left" | "used";
 type ResetWindowMode = "5h" | "7d";
 
@@ -518,78 +524,97 @@ function createStatusRefresher() {
 	let refreshTimer: ReturnType<typeof setInterval> | undefined;
 	let activeContext: ExtensionContext | undefined;
 	let isRefreshInFlight = false;
-	let queuedRefresh: { ctx: ExtensionContext; modelId: string | undefined } | null = null;
+	let queuedRefresh: { modelId: string | undefined } | null = null;
 	let percentDisplayMode: PercentDisplayMode = DEFAULT_PERCENT_DISPLAY_MODE;
 	let resetWindowMode: ResetWindowMode = DEFAULT_RESET_WINDOW_MODE;
-	let lastUsageSnapshot: UsageSnapshot | undefined;
+	let statusState: FooterStatusState | undefined;
 
-	async function updateFooterStatus(ctx: ExtensionContext, modelId = ctx.model?.id): Promise<void> {
-		if (!ctx.hasUI) return;
+	// render() is the only function that writes the footer, and activeContext is the
+	// only ctx it uses. Pi always awaits session_shutdown before a captured ctx goes
+	// stale, and stopAutoRefresh() clears the slot there, so a slot value read and
+	// used synchronously is always safe. Async code must never use a captured ctx
+	// after an await: it stores results in statusState and lets render() re-read the slot.
+	function render(): void {
+		const ctx = activeContext;
+		if (!ctx || !ctx.hasUI || !statusState) return;
+
+		switch (statusState.kind) {
+			case "loading": {
+				const loadingStatus = `${getStatusLabel(statusState.modelId)} loading...`;
+				ctx.ui.setStatus(EXTENSION_ID, ctx.ui.theme.fg("dim", loadingStatus));
+				break;
+			}
+			case "ready":
+				ctx.ui.setStatus(
+					EXTENSION_ID,
+					formatStatus(ctx, statusState.usage, percentDisplayMode, resetWindowMode, statusState.modelId),
+				);
+				break;
+			case "hidden":
+				ctx.ui.setStatus(EXTENSION_ID, undefined);
+				break;
+			case "unavailable": {
+				const unavailableStatus = `${getStatusLabel(statusState.modelId)} unavailable`;
+				ctx.ui.setStatus(EXTENSION_ID, ctx.ui.theme.fg("warning", unavailableStatus));
+				break;
+			}
+		}
+
+	}
+
+	async function refreshUsage(modelId: string | undefined): Promise<void> {
 		if (isRefreshInFlight) {
-			queuedRefresh = { ctx, modelId };
+			queuedRefresh = { modelId };
 			return;
 		}
 		isRefreshInFlight = true;
 		try {
 			const usage = parseUsageSnapshot(await requestUsageJson(), modelId);
-			lastUsageSnapshot = usage;
-			ctx.ui.setStatus(EXTENSION_ID, formatStatus(ctx, usage, percentDisplayMode, resetWindowMode, modelId));
+			statusState = { kind: "ready", usage, modelId };
 		} catch (error) {
-			if (isMissingCodexAuthError(error)) {
-				lastUsageSnapshot = undefined;
-				ctx.ui.setStatus(EXTENSION_ID, undefined);
-				return;
-			}
-
-			const theme = ctx.ui.theme;
-			const unavailableStatus = `${getStatusLabel(modelId)} unavailable`;
-			ctx.ui.setStatus(EXTENSION_ID, theme.fg("warning", unavailableStatus));
+			statusState = isMissingCodexAuthError(error) ? { kind: "hidden" } : { kind: "unavailable", modelId };
 		} finally {
 			isRefreshInFlight = false;
-			if (queuedRefresh) {
-				const nextRefresh = queuedRefresh;
-				queuedRefresh = null;
-				void updateFooterStatus(nextRefresh.ctx, nextRefresh.modelId);
-			}
 		}
+		render();
+		if (queuedRefresh) {
+			const nextRefresh = queuedRefresh;
+			queuedRefresh = null;
+			await refreshUsage(nextRefresh.modelId);
+		}
+
 	}
 
 	function refreshFor(ctx: ExtensionContext, modelId = ctx.model?.id): Promise<void> {
 		activeContext = ctx;
-		return updateFooterStatus(ctx, modelId);
+		return refreshUsage(modelId);
 	}
 
 	function startAutoRefresh(): void {
 		if (refreshTimer) clearInterval(refreshTimer);
 		refreshTimer = setInterval(() => {
-			if (!activeContext) return;
-			void updateFooterStatus(activeContext);
+			const ctx = activeContext;
+			if (!ctx) return;
+			void refreshUsage(ctx.model?.id);
 		}, REFRESH_INTERVAL_MS);
 		refreshTimer.unref?.();
 	}
 
-	function stopAutoRefresh(ctx?: ExtensionContext): void {
+	function stopAutoRefresh(): void {
 		if (refreshTimer) {
 			clearInterval(refreshTimer);
 			refreshTimer = undefined;
 		}
-		ctx?.ui.setStatus(EXTENSION_ID, undefined);
+		queuedRefresh = null;
+		const ctx = activeContext;
+		activeContext = undefined;
+		if (ctx?.hasUI) ctx.ui.setStatus(EXTENSION_ID, undefined);
 	}
 
-	async function setLoadingStatus(ctx: ExtensionContext): Promise<void> {
-		if (!ctx.hasUI) return;
-
-		try {
-			await loadAuthCredentials();
-		} catch (error) {
-			if (isMissingCodexAuthError(error)) {
-				ctx.ui.setStatus(EXTENSION_ID, undefined);
-				return;
-			}
-		}
-
-		const loadingStatus = `${getStatusLabel(ctx.model?.id)} loading...`;
-		ctx.ui.setStatus(EXTENSION_ID, ctx.ui.theme.fg("dim", loadingStatus));
+	function setLoading(ctx: ExtensionContext): void {
+		activeContext = ctx;
+		statusState = { kind: "loading", modelId: ctx.model?.id };
+		render();
 	}
 
 	function setPercentDisplayMode(mode: PercentDisplayMode): void {
@@ -608,22 +633,27 @@ function createStatusRefresher() {
 		return resetWindowMode;
 	}
 
-	function renderFromLastSnapshot(ctx: ExtensionContext): boolean {
-		if (!ctx.hasUI || !lastUsageSnapshot) return false;
-		ctx.ui.setStatus(EXTENSION_ID, formatStatus(ctx, lastUsageSnapshot, percentDisplayMode, resetWindowMode, ctx.model?.id));
+	function renderStoredStatus(): boolean {
+		if (!statusState) return false;
+		render();
 		return true;
+	}
+
+	function getActiveContext(): ExtensionContext | undefined {
+		return activeContext;
 	}
 
 	return {
 		refreshFor,
 		startAutoRefresh,
 		stopAutoRefresh,
-		setLoadingStatus,
+		setLoading,
 		setPercentDisplayMode,
 		getPercentDisplayMode,
 		setResetWindowMode,
 		getResetWindowMode,
-		renderFromLastSnapshot,
+		renderStoredStatus,
+		getActiveContext,
 	};
 }
 
@@ -639,7 +669,15 @@ export default function (pi: ExtensionAPI) {
 	let modeChangedDuringStartupLoad = false;
 	let windowChangedDuringStartupLoad = false;
 
-	function queuePersistCurrentPreferences(ctx: ExtensionContext): void {
+	// notify() reads the live context slot at call time instead of using a captured
+	// ctx, so deferred notifications stay safe across session replacement and reload.
+	function notify(message: string, type: "info" | "warning"): void {
+		const ctx = refresher.getActiveContext();
+		if (!ctx?.hasUI) return;
+		ctx.ui.notify(message, type);
+	}
+
+	function queuePersistCurrentPreferences(): void {
 		const preferences: ExtensionPreferences = {
 			usageMode: refresher.getPercentDisplayMode(),
 			refreshWindow: refresher.getResetWindowMode(),
@@ -650,15 +688,11 @@ export default function (pi: ExtensionAPI) {
 			.then(() => persistPreferences(preferences));
 
 		void settingsWriteQueue.catch((error) => {
-			if (!ctx.hasUI) return;
-			ctx.ui.notify(
-				`pi-codex-usage: failed to write ${SETTINGS_FILE}: ${formatErrorMessage(error)}`,
-				"warning",
-			);
+			notify(`pi-codex-usage: failed to write ${SETTINGS_FILE}: ${formatErrorMessage(error)}`, "warning");
 		});
 	}
 
-	async function applyPersistedPreferences(ctx: ExtensionContext): Promise<void> {
+	async function applyPersistedPreferences(): Promise<void> {
 		applyingPersistedPreferences = true;
 		try {
 			const { preferences, needsWrite } = await loadPersistedPreferences();
@@ -669,7 +703,7 @@ export default function (pi: ExtensionAPI) {
 				refresher.setResetWindowMode(preferences.refreshWindow);
 			}
 			if (needsWrite) {
-				queuePersistCurrentPreferences(ctx);
+				queuePersistCurrentPreferences();
 			}
 		} catch (error) {
 			if (!modeChangedDuringStartupLoad) {
@@ -678,9 +712,7 @@ export default function (pi: ExtensionAPI) {
 			if (!windowChangedDuringStartupLoad) {
 				refresher.setResetWindowMode(DEFAULT_RESET_WINDOW_MODE);
 			}
-			if (!ctx.hasUI) return;
-
-			ctx.ui.notify(
+			notify(
 				`pi-codex-usage: failed to load ${SETTINGS_FILE}, using defaults (${DEFAULT_PERCENT_DISPLAY_MODE}, ${DEFAULT_RESET_WINDOW_MODE}): ${formatErrorMessage(error)}`,
 				"warning",
 			);
@@ -694,8 +726,8 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		refresher.startAutoRefresh();
 		void (async () => {
-			await applyPersistedPreferences(ctx);
-			await refresher.setLoadingStatus(ctx);
+			await applyPersistedPreferences();
+			refresher.setLoading(ctx);
 			await refresher.refreshFor(ctx);
 		})();
 	});
@@ -707,8 +739,8 @@ export default function (pi: ExtensionAPI) {
 		void refresher.refreshFor(ctx, event.model.id);
 	});
 
-	pi.on("session_shutdown", (_event, ctx) => {
-		refresher.stopAutoRefresh(ctx);
+	pi.on("session_shutdown", () => {
+		refresher.stopAutoRefresh();
 	});
 
 	pi.registerCommand("codex-usage-mode", {
@@ -720,8 +752,8 @@ export default function (pi: ExtensionAPI) {
 
 			if (applyingPersistedPreferences) modeChangedDuringStartupLoad = true;
 			refresher.setPercentDisplayMode(nextMode);
-			queuePersistCurrentPreferences(ctx);
-			if (!refresher.renderFromLastSnapshot(ctx)) {
+			queuePersistCurrentPreferences();
+			if (!refresher.renderStoredStatus()) {
 				await refresher.refreshFor(ctx);
 			}
 		},
@@ -736,8 +768,8 @@ export default function (pi: ExtensionAPI) {
 
 			if (applyingPersistedPreferences) windowChangedDuringStartupLoad = true;
 			refresher.setResetWindowMode(nextWindow);
-			queuePersistCurrentPreferences(ctx);
-			if (!refresher.renderFromLastSnapshot(ctx)) {
+			queuePersistCurrentPreferences();
+			if (!refresher.renderStoredStatus()) {
 				await refresher.refreshFor(ctx);
 			}
 		},
@@ -745,15 +777,17 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerCommand("codex-resets", {
 		description: "Show available Codex reset credits",
-		handler: async (_args, ctx) => {
-			if (!ctx.hasUI) return;
-
+		handler: async () => {
+			let message: string;
+			let type: "info" | "warning" = "info";
 			try {
 				const rows = normalizeResetCreditRows(await requestResetCreditsJson());
-				ctx.ui.notify(formatResetCreditsTable(rows), "info");
+				message = formatResetCreditsTable(rows);
 			} catch (error) {
-				ctx.ui.notify(`pi-codex-usage: failed to load Codex resets: ${formatErrorMessage(error)}`, "warning");
+				message = `pi-codex-usage: failed to load Codex resets: ${formatErrorMessage(error)}`;
+				type = "warning";
 			}
+			notify(message, type);
 		},
 	});
 }
