@@ -187,7 +187,6 @@ function formatStatus(
 	usage: UsageSnapshot,
 	mode: PercentDisplayMode,
 	resetWindowMode: ResetWindowMode,
-	modelId: string | undefined,
 ): string {
 	const theme = ctx.ui.theme;
 	const label = mode === "left" ? LEFT_MODE_ICON : USED_MODE_ICON;
@@ -552,7 +551,7 @@ function createStatusRefresher() {
 			case "ready":
 				ctx.ui.setStatus(
 					EXTENSION_ID,
-					formatStatus(ctx, statusState.usage, percentDisplayMode, resetWindowMode, statusState.modelId),
+				formatStatus(ctx, statusState.usage, percentDisplayMode, resetWindowMode),
 				);
 				break;
 			case "hidden":
